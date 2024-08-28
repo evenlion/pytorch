@@ -231,6 +231,8 @@ class CachingAutotuner(KernelInterface):
         self.precompile_time_taken_ns = 0
         self.autotune_time_taken_ns = 0
 
+        self.autotune_post_hook = self.get_autotune_post_hook()
+
     def precompile(self, warm_cache_only=False):
         with self.lock:
             if self.launchers:
@@ -347,6 +349,31 @@ class CachingAutotuner(KernelInterface):
         from torch._dynamo.device_interface import get_interface_for_device
 
         return get_interface_for_device(self.device_props.type.replace("hip", "cuda"))
+
+    def get_autotune_post_hook(self):
+        """
+        [Note: Autotune post-hook for workspace inputs]
+        Some inductor code uses workspaces which are allocated outside of the triton kernel
+        and then passed into kernel for use - for example, to pass data between thread blocks.
+
+        Sometimes the workspace needs to be initialized to zero.
+        The triton wrapper code generates .zero_() call(s) to do this at runtime;
+        but if autotuning, the kernel may be re-run multiple times after the zero_() call.
+
+        This is the solution: define a autotune_post_hook that we run after running the kernel
+        during autotuning, so that the state of the workspace returns to the expected state.
+        """
+        to_init: Optional[List[str]] = self.inductor_meta.get("workspace_to_init", None)
+
+        if to_init is None:
+            return None
+
+        def post_hook(kwargs: Dict[str, Any]):
+            for name in to_init:
+                assert name in kwargs
+                kwargs[name].zero_()
+
+        return post_hook
 
     def _precompile_config(self, cfg: Config, warm_cache_only: bool):
         """Ahead of time compile a given autotuner config."""
@@ -666,6 +693,11 @@ class CachingAutotuner(KernelInterface):
                 grid=grid,
                 stream=stream,
             )
+
+            if self.autotune_post_hook is not None:
+                self.autotune_post_hook(
+                    {**dict(zip(self.fn.arg_names, args)), **launcher.config.kwargs}
+                )
 
         if with_profiler:
             from torch._inductor.utils import do_bench_using_profiling

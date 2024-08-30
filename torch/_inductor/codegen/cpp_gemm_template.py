@@ -440,7 +440,7 @@ class CppPackedGemmTemplate(CppTemplate):
             # Step 1: Decide Kc assuming B block is L1-reside.
             size_cache_B = Kr * Kt_blocks * Nr * num_byte_B
             if self.is_int4_woq_gemm:
-                size_cache_B = size_cache_B / 2
+                size_cache_B = size_cache_B // 8
             Kc_blocks = Kt_blocks
             if size_cache_B > L1:
                 Kc_blocks = math.floor(L1 / (Kr * Nr * num_byte_B))

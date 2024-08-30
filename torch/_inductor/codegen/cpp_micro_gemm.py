@@ -707,7 +707,7 @@ inline void {{kernel_name}}_kernel(
 }
 """
 
-    def codegen_call(
+    def codegen_call(  # type: ignore[override]
         self,
         kernel: CppTemplateKernel,
         X: ir.Buffer,
@@ -1090,8 +1090,8 @@ def create_micro_gemm(
                 ):
                     continue
                 block_m, block_n, block_k = config.register_blocking
-                if is_int4_woq_gemm and block_k != q_group_size:
-                    # block_k must be equal to q_group_size which can be either 32/64/128/256
+                if is_int4_woq_gemm and q_group_size != block_k:
+                    # Support for block_k smaller than q_group_size will be added in the near future
                     continue
                 # Criteria on the ranking of configurations
                 # 1. ISA: AMX > VEC

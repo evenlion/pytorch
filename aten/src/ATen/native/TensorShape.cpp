@@ -4071,15 +4071,6 @@ void split_with_sizes_copy_out(const at::Tensor & self, at::IntArrayRef split_si
   }
 }
 
-void unbind_copy_int_out(const at::Tensor & self, int64_t dim, at::TensorList  out) {
-  auto tmp = self.unbind(dim);
-
-  TORCH_CHECK(out.size() == tmp.size(), "unbind_copy_int_out() expected an out= argument of size ", tmp.size(), ", got size ", out.size());
-  for (const auto i : c10::irange(out.size())) {
-    out[i].copy_(tmp[i]);
-  }
-}
-
 int64_t sparse_dim_default(const Tensor& self) {
   TORCH_CHECK(self.layout() == kStrided, "sparse_dim expected sparse or strided tensor layout but got ", self.layout());
   return 0;

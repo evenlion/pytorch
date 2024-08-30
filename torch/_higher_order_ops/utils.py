@@ -8,7 +8,10 @@ import torch
 import torch.fx.traceback as fx_traceback
 import torch.utils._pytree as pytree
 from torch._ops import OperatorBase
-from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.experimental.proxy_tensor import (
+    _temp_remove_metadata_torch_function_mode,
+    make_fx,
+)
 from torch.multiprocessing.reductions import StorageWeakRef
 
 
@@ -105,13 +108,14 @@ def _maybe_reenter_make_fx(fn):
 @contextmanager
 def _set_compilation_env():
     _old_is_tracing = torch.fx._symbolic_trace._is_fx_tracing_flag
-    try:
-        # We need to turn off the is_fx_tracing_flag. Remove this flag check from dyanmo
-        # once we are confident fx tracing works with dynamo.
-        torch.fx._symbolic_trace._is_fx_tracing_flag = False
-        yield
-    finally:
-        torch.fx._symbolic_trace._is_fx_tracing_flag = _old_is_tracing
+    with _temp_remove_metadata_torch_function_mode():
+        try:
+            # We need to turn off the is_fx_tracing_flag. Remove this flag check from dyanmo
+            # once we are confident fx tracing works with dynamo.
+            torch.fx._symbolic_trace._is_fx_tracing_flag = False
+            yield
+        finally:
+            torch.fx._symbolic_trace._is_fx_tracing_flag = _old_is_tracing
 
 
 def _has_potential_branch_input_mutation(branch, inputs, pre_dispatch=False):

@@ -30,7 +30,6 @@ from typing import (
     Set,
     Tuple,
     Type,
-    TYPE_CHECKING,
     Union,
 )
 from unittest.mock import patch
@@ -119,11 +118,7 @@ from .variables.misc import (
 )
 from .variables.nn_module import NNModuleVariable, UnspecializedNNModuleVariable
 from .variables.tensor import supported_comparison_ops, SymNodeVariable, TensorVariable
-
-
-if TYPE_CHECKING:
-    from .variables.torch_function import TorchFunctionModeVariable
-
+from .variables.torch_function import TorchFunctionModeVariable
 from .variables.user_defined import (
     RemovableHandleVariable,
     UserDefinedClassVariable,
@@ -283,6 +278,10 @@ class BlockStackEntry:
             return ReenterWith(self.stack_index)
 
     def exit(self, tx):
+        if hasattr(self, "graph_break") and isinstance(
+            self.with_context, TorchFunctionModeVariable
+        ):
+            return
         assert self.with_context is not None
         return self.with_context.exit(tx)
 
@@ -651,7 +650,9 @@ def break_graph_if_unsupported(*, push):
             # Reconstruct the context variable CLASS in the block stack
             for b in self.block_stack:
                 assert b.with_context is not None
-                assert isinstance(b.with_context, ContextWrappingVariable)
+                assert isinstance(
+                    b.with_context, (ContextWrappingVariable, TorchFunctionModeVariable)
+                )
                 b.with_context.reconstruct_type(cg)
                 cg.extend_output(b.resume_fn().try_except(cg.code_options, cleanup))
             self.output.add_output_instructions(cg.get_instructions())
@@ -1122,6 +1123,8 @@ class InstructionTranslatorBase(
         return VariableBuilder(self, module_source)(fglobals_value)
 
     def LOAD_GLOBAL(self, inst):
+        if inst.argval == "_pop_mode":
+            breakpoint()
         if sys.version_info >= (3, 11) and sys.version_info < (3, 13) and inst.arg % 2:
             self.PUSH_NULL(inst)
         self._load_global(inst)
@@ -2304,7 +2307,9 @@ class InstructionTranslatorBase(
         ):
             unimplemented(f"{inst.opname} {ctx}")
 
-        if isinstance(ctx, GenericContextWrappingVariable):
+        if isinstance(ctx, GenericContextWrappingVariable) and not isinstance(
+            ctx, TorchFunctionModeVariable
+        ):
             self.generic_context_manager_depth += 1
 
         # Need this redundant check for mypy

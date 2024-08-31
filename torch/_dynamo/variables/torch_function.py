@@ -5,16 +5,26 @@ from typing import Dict, List, TYPE_CHECKING
 
 import torch.utils._pytree as pytree
 from torch._guards import Source
-from torch.overrides import _get_overloaded_args, get_default_nowrap_functions
+from torch.overrides import (
+    _get_overloaded_args,
+    get_default_nowrap_functions,
+    TorchFunctionMode,
+)
 from torch.utils._device import DeviceContext
 
 from ..exc import unimplemented
 from ..guards import GuardBuilder, install_guard
+from ..polyfills import NoEnterDeviceTorchFunctionMode, NoEnterTorchFunctionMode
 from ..source import AttrSource, GlobalSource, TorchFunctionModeStackSource, TypeSource
-from ..utils import get_safe_global_name, has_torch_function, is_tensor_base_attr_getter
+from ..utils import (
+    class_has_getattribute,
+    get_safe_global_name,
+    has_torch_function,
+    is_tensor_base_attr_getter,
+)
 from .base import VariableTracker
 from .constant import ConstantVariable
-from .ctx_manager import ContextWrappingVariable
+from .ctx_manager import GenericContextWrappingVariable
 from .lists import TupleVariable
 from .tensor import TensorSubclassVariable, TensorVariable
 from .user_defined import UserDefinedObjectVariable
@@ -123,23 +133,50 @@ class TorchFunctionModeStackVariable(VariableTracker):
         return ind + cls.offset
 
 
-class TorchFunctionModeVariable(ContextWrappingVariable):
+class TorchFunctionModeVariable(GenericContextWrappingVariable):
+    @staticmethod
+    def is_supported_torch_function_mode(ty):
+        # Supported in this sense means we can support graph breaks under the
+        # context.
+        # We are able to trace custom modes but if there are graph breaks under them
+        # and they have a custom __enter__/__exit__ we don't handle this for the
+        # same reason we don't handle generic context managers: there may be side effects
+        # that are now affected by executing the funtion across two frames instead of one
+        # Today we support the enter/exit of the default TorchFunctionMode as well as
+        # DeviceContext (which is used for set_default_device)
+        return isinstance(ty, (DeviceContext, NoEnterTorchFunctionMode)) or (
+            not class_has_getattribute(ty)
+            and inspect.getattr_static(ty, "__enter__") == TorchFunctionMode.__enter__
+            and inspect.getattr_static(ty, "__exit__") == TorchFunctionMode.__exit__
+        )
+
     def __init__(self, value, source=None, **kwargs):
         super().__init__(value, **kwargs)
-        assert source
         self.value = value
+        self.cm_obj = value  # needed for BC with calling enter from CM code
         self.source = source
 
     def reconstruct(self, codegen):
-        # We don't support locally created torch function modes yet
+        # This shouldn't be called unless we have a source
         assert self.source
         self.source.reconstruct(codegen)
+
+    def module_name(self):
+        return self.value.__module__
+
+    def fn_name(self):
+        return type(self.value).__name__
 
     def python_type(self):
         return type(self.value)
 
-    def _call_func(self, tx, values):
-        unimplemented("torch function mode context manager is not supported yet")
+    def enter(self, tx):
+        tx.push_torch_function_mode_stack(self)
+        return ConstantVariable.create(None)
+
+    def exit(self, tx, *args):
+        tx.pop_torch_function_mode_stack()
+        return ConstantVariable.create(None)
 
     def call_torch_function(self, tx: "InstructionTranslator", fn, types, args, kwargs):
         return call_torch_function(
@@ -150,6 +187,23 @@ class TorchFunctionModeVariable(ContextWrappingVariable):
             types,
             args,
             kwargs,
+        )
+
+    def reconstruct_type(self, codegen):
+        ty = (
+            NoEnterDeviceTorchFunctionMode
+            if isinstance(self.value, DeviceContext)
+            else NoEnterTorchFunctionMode
+        )
+        # codegen(
+        #    AttrSource(
+        #        codegen.tx.import_source(torch._dynamo.polyfills.__name__), ty.__name__),
+        #    )
+        codegen(
+            AttrSource(
+                codegen.tx.import_source(self.value.__module__),
+                type(self.value).__name__,
+            )
         )
 
 

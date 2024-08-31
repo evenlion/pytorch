@@ -14,6 +14,17 @@ from torch.utils._device import DeviceContext
 from torch.utils._python_dispatch import TorchDispatchMode
 
 
+class TestMode(BaseTorchFunctionMode):
+    def __torch_function__(self, func, types, args, kwargs=None):
+        if not kwargs:
+            kwargs = {}
+
+        if func == torch.add:
+            return torch.zeros(2, 2)
+
+        return super().__torch_function__(func, types, args, kwargs)
+
+
 class TorchDispatchModeTests(torch._dynamo.test_case.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -334,16 +345,6 @@ class TorchFunctionModeTests(torch._dynamo.test_case.TestCase):
                     return torch.ones(2, 2)
                 return super().__torch_function__(func, types, args, kwargs)
 
-        class TestMode(BaseTorchFunctionMode):
-            def __torch_function__(self, func, types, args, kwargs=None):
-                if not kwargs:
-                    kwargs = {}
-
-                if func == torch.add:
-                    return torch.zeros(2, 2)
-
-                return super().__torch_function__(func, types, args, kwargs)
-
         def fn(x):
             return torch.add(x, 3)
 
@@ -355,6 +356,75 @@ class TorchFunctionModeTests(torch._dynamo.test_case.TestCase):
         ):
             expected = fn(inp)
             actual = fn_opt(inp)
+
+        self.assertEqual(expected, actual)
+
+    def test_torch_function_mode_enter_exit(self):
+        def fn(x, y):
+            with TestMode():
+                o = torch.add(x, 3)
+
+            return torch.add(o, y)
+
+        inp = (torch.ones(2, 2) + 1, torch.ones(2, 2) + 2)
+        fn_opt = torch.compile(fn, fullgraph=True)
+
+        expected = fn(*inp)
+        actual = fn_opt(*inp)
+
+        self.assertEqual(expected, actual)
+
+    def test_torch_function_mode_graph_break(self):
+        def fn(x, y):
+            with TestMode():
+                torch._dynamo.graph_break()
+                o = torch.add(x, 3)
+
+            return torch.add(o, y)
+
+        inp = (torch.ones(2, 2) + 1, torch.ones(2, 2) + 2)
+        fn_opt = torch.compile(fn)
+
+        expected = fn(*inp)
+        actual = fn_opt(*inp)
+
+        self.assertEqual(expected, actual)
+
+    def test_torch_function_mode_and_pop_graph_break(self):
+        def fn(x, y):
+            with TestMode():
+                z = _pop_torch_function_stack()
+                torch._dynamo.graph_break()
+                _push_on_torch_function_stack(z)
+                o = torch.add(x, 3)
+
+            return torch.add(o, y)
+
+        inp = (torch.ones(2, 2) + 1, torch.ones(2, 2) + 2)
+        fn_opt = torch.compile(fn)
+
+        expected = fn(*inp)
+        actual = fn_opt(*inp)
+
+        self.assertEqual(expected, actual)
+
+    def test_torch_function_mode_and_pop_graph_break_mutation(self):
+        def fn(x, y):
+            with TestMode():
+                z = _pop_torch_function_stack()
+                z.y = 5
+                torch._dynamo.graph_break()
+                _push_on_torch_function_stack(z)
+                o = torch.add(x, 3)
+                o = torch.mul(o, z.y)
+
+            return torch.add(o, y)
+
+        inp = (torch.ones(2, 2) + 1, torch.ones(2, 2) + 2)
+        fn_opt = torch.compile(fn)
+
+        expected = fn(*inp)
+        actual = fn_opt(*inp)
 
         self.assertEqual(expected, actual)
 

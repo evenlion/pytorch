@@ -128,8 +128,17 @@ class ConstDictVariable(VariableTracker):
             return Hashable._eq_impl(self.underlying_value, other)
 
     def __init__(
-        self, items: Dict[VariableTracker, VariableTracker], user_cls=dict, **kwargs
+        self,
+        items: Dict[VariableTracker, VariableTracker],
+        user_cls=dict,
+        is_python_arg=False,
+        **kwargs,
     ) -> None:
+        if "original_items" in kwargs:
+            kwargs.pop("original_items")
+        if "pop_items" in kwargs:
+            kwargs.pop("pop_items")
+
         super().__init__(**kwargs)
 
         Hashable = ConstDictVariable._HashableTracker
@@ -145,6 +154,10 @@ class ConstDictVariable(VariableTracker):
             return key if isinstance(key, Hashable) else Hashable(key)
 
         self.items = {make_hashable(x): v for x, v in items.items()}
+        # Mark where a pop/delitem was executed
+        self.pop_items = not is_python_arg or False
+        # self.original_items = {k: v.realize() for k, v in items.items()}
+        self.original_items = items.copy()
         self.user_cls = user_cls
 
     def as_proxy(self):
@@ -189,6 +202,19 @@ class ConstDictVariable(VariableTracker):
             ]
         )
 
+    # def has_side_effect_mutation(self):
+    #     def maybe_realize(item):
+    #         return item.realize() if item else item
+
+    #     return self.pop_items or any(
+    #         maybe_realize(self.original_items.get(key.vt)) != value
+    #         # self.original_items.get(key.vt) != value
+    #         for key, value in self.items.items()
+    #     )
+
+    def _maybe_realize(self, item):
+        return item.realize() if item else item
+
     def reconstruct(self, codegen):
         # instructions to load collections.OrderedDict if necessary
         if self.user_cls is collections.OrderedDict:
@@ -201,20 +227,27 @@ class ConstDictVariable(VariableTracker):
                 )
             )
         # instructions to build the dict keys and values
+        n_insert = 0
         for key, value in self.items.items():
-            codegen(key.vt)
-            codegen(value)
+            # We can safely call realize() here as it won't introduce any new guards
+            ne = self._maybe_realize(self.original_items.get(key.vt)) != value.realize()
+
+            if ne or self.pop_items:
+                codegen(key.vt)
+                codegen(value)
+                n_insert += 1
+
         # BUILD_MAP and calling collections.OrderedDict if necessary
         if self.user_cls is collections.OrderedDict:
             codegen.extend_output(
                 [
-                    create_instruction("BUILD_MAP", arg=len(self.items)),
+                    create_instruction("BUILD_MAP", arg=n_insert),
                     *create_call_function(1, False),
                 ]
             )
         # BUILD_MAP only if user_cls is dict
         else:
-            codegen.append_output(create_instruction("BUILD_MAP", arg=len(self.items)))
+            codegen.append_output(create_instruction("BUILD_MAP", arg=n_insert))
 
     def getitem_const_raise_exception_if_absent(
         self, tx: "InstructionTranslator", arg: VariableTracker
@@ -288,6 +321,7 @@ class ConstDictVariable(VariableTracker):
             self.items[Hashable(args[0])] = args[1]
             return ConstantVariable.create(None)
         elif name == "__delitem__" and arg_hashable and self.mutable_local:
+            self.pop_items = True
             tx.output.side_effects.mutation(self)
             self.items.__delitem__(Hashable(args[0]))
             return ConstantVariable.create(None)
@@ -298,9 +332,11 @@ class ConstDictVariable(VariableTracker):
             else:
                 return args[1]
         elif name == "pop" and arg_hashable and self.mutable_local:
+            self.pop_items = True
             tx.output.side_effects.mutation(self)
             return self.items.pop(Hashable(args[0]))
         elif name == "clear":
+            self.pop_items = True
             tx.output.side_effects.mutation(self)
             self.items.clear()
             return ConstantVariable.create(None)

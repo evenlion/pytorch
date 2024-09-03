@@ -62,6 +62,8 @@ from torch._inductor.codegen.rocm.compile_command import (
 )
 from torch._utils_internal import log_cache_bypass
 
+from .runtime.autotune_cache import AutotuneCacheBundler
+
 
 T = TypeVar("T")
 
@@ -1472,7 +1474,10 @@ class CompiledFxGraph:
 
     def __call__(self, inputs: List[Any]) -> Any:
         assert self.current_callable is not None
-        return self.current_callable(inputs)
+        try:
+            return self.current_callable(inputs)
+        finally:
+            AutotuneCacheBundler.end_compile()
 
 
 def run_command_and_check(cmd_: str) -> None:

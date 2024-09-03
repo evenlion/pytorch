@@ -89,6 +89,8 @@ from .lowering import (
     needs_realized_inputs,
     unsupported_output_tensor,
 )
+from .runtime import autotune_cache
+from .runtime.autotune_cache import AutotuneCacheBundler
 from .scheduler import BaseSchedulerNode
 from .sizevars import SizeVarAllocator
 from .utils import (
@@ -1846,6 +1848,12 @@ class GraphLowering(torch.fx.Interpreter):
 
         GraphLowering.save_output_code(code)
         output_code_log.debug("Output code: \n%s", code)
+
+        code_hash = _comment_stripped_hash(code)
+        # torch.utils.report_that("GOT HASH CODE HERE")  # pyre-fixme[16]
+        inductor_meta = autotune_cache.inductor_meta_from_config()
+        AutotuneCacheBundler.begin_compile(code_hash, inductor_meta)
+
         try:
             linemap = [(line_no, node.stack_trace) for line_no, node in linemap]  # type: ignore[misc]
             key, path = PyCodeCache.write(code)
@@ -1927,3 +1935,13 @@ class GraphLowering(torch.fx.Interpreter):
             and self.graph_inputs[name].get_numel() == 1
             and self.graph_inputs[name].get_device().type == "cpu"
         ) or name in self.zero_dim_cpu_tensor_list
+
+
+def _comment_stripped_hash(code: str) -> str:
+    # Remove the comments from the code (which include things like run ids and
+    # file paths) and then hash the result.
+
+    # TODO: Do we need to worry about embedded strings containing '#' (in which
+    # case this needs to be more complex than a regex)?
+    code = re.sub(r"#.*$", "", code, count=0, flags=re.MULTILINE)
+    return str(hash(code))

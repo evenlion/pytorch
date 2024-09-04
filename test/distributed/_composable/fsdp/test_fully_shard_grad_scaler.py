@@ -17,7 +17,7 @@ from torch.testing._internal.common_utils import run_tests, skipIfRocm
 
 
 class TestFullyShardGradientScaler(FSDPTest):
-    @skip_if_lt_x_gpu(2)
+    @skip_if_lt_x_gpu(4)
     @skipIfRocm
     def test_gradient_scaler(self):
         self.run_subtests(
